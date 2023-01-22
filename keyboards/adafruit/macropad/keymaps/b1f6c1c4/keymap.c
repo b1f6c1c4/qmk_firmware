@@ -19,8 +19,8 @@
 #include "switcher.h"
 #include "raw_hid.h"
 
-static int g_perm_tty, g_temp_tty, g_prev_tty, g_mod;
-static bool g_locked, g_mod_virgin, g_lck_down;
+static int g_perm_tty, g_temp_tty, g_prev_tty, g_vim_tty, g_mod;
+static bool g_locked, g_mod_virgin, g_lck_down, g_tty_active;
 static uint32_t g_last_mod_down = 0;
 static deferred_token g_lck_token;
 
@@ -59,9 +59,9 @@ const uint16_t PROGMEM encoder_map[][NUM_ENCODERS][2] = {
 void keyboard_post_init_user(void) {
     static const char PROGMEM qmk_logo[16 * 32] = {};
     oled_write_raw_P(qmk_logo, sizeof(qmk_logo));
-    g_perm_tty = 1, g_temp_tty = g_prev_tty = 0;
+    g_perm_tty = 1, g_temp_tty = g_prev_tty = g_vim_tty = 0;
     g_mod = 0;
-    g_locked = g_lck_down = false;
+    g_locked = g_lck_down = g_tty_active = false;
     rgb_matrix_mode_noeeprom(RGB_MATRIX_SOLID_COLOR);
     rgb_matrix_set_color_all(0, 0, 0);
 }
@@ -121,6 +121,10 @@ bool rgb_matrix_indicators_advanced_user(uint8_t led_min, uint8_t led_max) {
             RGB_MATRIX_INDICATOR_SET_COLOR(n, 177, 15, 0); \
         } else if (g_perm_tty == v) { \
             RGB_MATRIX_INDICATOR_SET_COLOR(n, 20, 20, 0); \
+        } else if (g_vim_tty == v && g_prev_tty == v) { \
+            RGB_MATRIX_INDICATOR_SET_COLOR(n, 20, 32, 18); \
+        } else if (g_vim_tty == v) { \
+            RGB_MATRIX_INDICATOR_SET_COLOR(n, 20, 32, 9); \
         } else if (g_prev_tty == v) { \
             RGB_MATRIX_INDICATOR_SET_COLOR(n, 0, 1, 2); \
         } else { \
@@ -163,7 +167,18 @@ bool process_record_kb(uint16_t keycode, keyrecord_t *record) {
         case SWKC_ROT: goto mod;
         case SWKC_BRW: pkt.id = SWTCHR_BROWSER; goto mod;
         case SWKC_VIM: pkt.id = SWTCHR_VIM; goto mod;
-        case SWKC_TMP: pkt.id = SWTCHR_TTY; goto mod;
+        case SWKC_TMP:
+            if (g_mod == SWKC_VIM) {
+                if (!record->event.pressed) {
+                    if (g_vim_tty)
+                        g_vim_tty = 0;
+                    else
+                        g_vim_tty = g_perm_tty;
+                }
+                return false;
+            }
+            pkt.id = SWTCHR_TTY;
+            goto mod;
         default: break;
 mod:
             if (record->event.pressed) { // press
@@ -172,6 +187,9 @@ mod:
                 g_last_mod_down = timer_read32();
                 if (keycode == SWKC_TMP) {
                     g_temp_tty = 0;
+                    if (g_perm_tty == g_vim_tty) {
+                        SEND_STRING(SS_TAP(X_ESC) "" SS_TAP(X_ESC) ":wa");
+                    }
                 }
             } else if (g_mod_virgin && timer_elapsed32(g_last_mod_down) < 300) { // quick virgin relase
                 g_mod = 0;
@@ -190,7 +208,7 @@ mod:
                 }
             } else { // slow or not-virgin release
                 if (keycode == SWKC_TMP) {
-                    if (g_temp_tty && g_perm_tty != g_temp_tty) {
+                    if (g_temp_tty && g_tty_active && g_perm_tty != g_temp_tty) {
                         g_prev_tty = g_perm_tty;
                         g_perm_tty = g_temp_tty;
                     }
@@ -260,11 +278,12 @@ mod:
             return false;
         case SWKC_TMP:
             pkt.id = SWTCHR_TTY;
+            g_tty_active = record->event.pressed;
             switch (keycode) {
 #define SWK(v) \
                 case SWKC_ ## v: \
                     if (record->event.pressed) pkt.payload = g_temp_tty = v; \
-                    else pkt.payload = g_perm_tty, g_temp_tty = 0; \
+                    else return false; \
                     goto send;
                 SWK(1) SWK(2) SWK(3) SWK(4) SWK(5) SWK(6) SWK(7) SWK(8)
 #undef SWK
