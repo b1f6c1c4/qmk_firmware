@@ -144,19 +144,39 @@ bool rgb_matrix_indicators_advanced_user(uint8_t led_min, uint8_t led_max) {
     return false;
 }
 
+static void set_tty(int tty_tgt) {
+    // struct switcher_packet pkt;
+    // pkt.id = SWTCHR_TTY;
+    // pkt.payload = tty_tgt;
+    // raw_hid_send((uint8_t*)&pkt, sizeof(pkt));
+    switch (tty_tgt) {
+        case 1: SEND_STRING(SS_DOWN(X_LCTL) SS_DOWN(X_LALT) SS_TAP(X_F1) SS_UP(X_LALT) SS_UP(X_LCTL)); break;
+        case 2: SEND_STRING(SS_DOWN(X_LCTL) SS_DOWN(X_LALT) SS_TAP(X_F2) SS_UP(X_LALT) SS_UP(X_LCTL)); break;
+        case 3: SEND_STRING(SS_DOWN(X_LCTL) SS_DOWN(X_LALT) SS_TAP(X_F3) SS_UP(X_LALT) SS_UP(X_LCTL)); break;
+        case 4: SEND_STRING(SS_DOWN(X_LCTL) SS_DOWN(X_LALT) SS_TAP(X_F4) SS_UP(X_LALT) SS_UP(X_LCTL)); break;
+        case 5: SEND_STRING(SS_DOWN(X_LCTL) SS_DOWN(X_LALT) SS_TAP(X_F5) SS_UP(X_LALT) SS_UP(X_LCTL)); break;
+        case 6: SEND_STRING(SS_DOWN(X_LCTL) SS_DOWN(X_LALT) SS_TAP(X_F6) SS_UP(X_LALT) SS_UP(X_LCTL)); break;
+        case 7: SEND_STRING(SS_DOWN(X_LCTL) SS_DOWN(X_LALT) SS_TAP(X_F7) SS_UP(X_LALT) SS_UP(X_LCTL)); break;
+        case 8: SEND_STRING(SS_DOWN(X_LCTL) SS_DOWN(X_LALT) SS_TAP(X_F8) SS_UP(X_LALT) SS_UP(X_LCTL)); break;
+    }
+}
+
 void raw_hid_receive(uint8_t *data, uint8_t length) {
-    uint8_t payload = data[1];
-    switch (data[0]) {
-        case SWTCHR_LOCK: g_locked = payload; break;
+    struct switcher_packet pkt;
+    memcpy(&pkt, data, length);
+    switch (pkt.id) {
+        case SWTCHR_LOCK:
+            g_locked = pkt.payload;
+            if (!g_locked) {
+                set_tty(g_perm_tty);
+            }
+            break;
     }
 }
 
 bool process_record_kb(uint16_t keycode, keyrecord_t *record) {
-    struct switcher_packet pkt;
-    // pkt.id = record->event.pressed ? 114 : 115;
-    // pkt.payload = keycode;
-    // raw_hid_send((uint8_t*)&pkt, sizeof(pkt));
-
+    if (g_locked) return false;
+    int tty_tgt = 0;
     int fake, *ptr;
     switch (g_mod) {
         case SWKC_ROT: ptr = &g_prev_tty; break;
@@ -164,9 +184,45 @@ bool process_record_kb(uint16_t keycode, keyrecord_t *record) {
         default: ptr = &fake; break;
     }
     switch (keycode) {
-        case SWKC_ROT: goto mod;
-        case SWKC_BRW: pkt.id = SWTCHR_BROWSER; goto mod;
-        case SWKC_VIM: pkt.id = SWTCHR_VIM; goto mod;
+        default: break;
+        case SWKC_ROT:
+            if (record->event.pressed) { // press
+                g_mod = keycode;
+                g_mod_virgin = true;
+                g_last_mod_down = timer_read32();
+            } else if (g_mod_virgin && timer_elapsed32(g_last_mod_down) < 300) { // quick virgin relase
+                g_mod = 0;
+                // quick tap
+            } else { // slow or not-virgin release
+                g_mod = 0;
+            }
+            return false;
+        case SWKC_BRW:
+            if (record->event.pressed) { // press
+                g_mod = keycode;
+                g_mod_virgin = true;
+                g_last_mod_down = timer_read32();
+            } else if (g_mod_virgin && timer_elapsed32(g_last_mod_down) < 300) { // quick virgin relase
+                g_mod = 0;
+                // quick tap
+                SEND_STRING(SS_TAP(X_F9) "");
+            } else { // slow or not-virgin release
+                g_mod = 0;
+            }
+            return false;
+        case SWKC_VIM:
+            if (record->event.pressed) { // press
+                g_mod = keycode;
+                g_mod_virgin = true;
+                g_last_mod_down = timer_read32();
+            } else if (g_mod_virgin && timer_elapsed32(g_last_mod_down) < 300) { // quick virgin relase
+                g_mod = 0;
+                // quick tap
+                SEND_STRING(SS_LCTL("ww"));
+            } else { // slow or not-virgin release
+                g_mod = 0;
+            }
+            return false;
         case SWKC_TMP:
             if (g_mod == SWKC_VIM) {
                 if (!record->event.pressed) {
@@ -177,61 +233,49 @@ bool process_record_kb(uint16_t keycode, keyrecord_t *record) {
                 }
                 return false;
             }
-            pkt.id = SWTCHR_TTY;
-            goto mod;
-        default: break;
-mod:
             if (record->event.pressed) { // press
                 g_mod = keycode;
                 g_mod_virgin = true;
                 g_last_mod_down = timer_read32();
-                if (keycode == SWKC_TMP) {
-                    g_temp_tty = 0;
-                    if (g_perm_tty == g_vim_tty) {
-                        SEND_STRING(SS_TAP(X_ESC) "" SS_TAP(X_ESC) ":wa");
-                    }
+                g_temp_tty = 0;
+                if (g_perm_tty == g_vim_tty) {
+                    SEND_STRING(SS_TAP(X_ESC) "" SS_TAP(X_ESC) ":wa\n");
                 }
-            } else if (g_mod_virgin && timer_elapsed32(g_last_mod_down) < 300) { // quick virgin relase
+            } else if (g_mod_virgin && timer_elapsed32(g_last_mod_down) < 300) { // quick virgin release
                 g_mod = 0;
                 // quick tap
-                if (keycode == SWKC_TMP) {
-                    g_temp_tty = 0;
-                    if (g_prev_tty) {
-                        pkt.payload = g_prev_tty;
-                        g_prev_tty = g_perm_tty;
-                        g_perm_tty = pkt.payload;
-                        goto send;
-                    }
-                } else if (keycode != SWKC_ROT) {
-                    pkt.payload = SWTCHR_SELF;
-                    goto send;
+                g_temp_tty = 0;
+                if (g_prev_tty) {
+                    tty_tgt = g_prev_tty;
+                    g_prev_tty = g_perm_tty;
+                    g_perm_tty = tty_tgt;
+                    goto send_tty;
                 }
             } else { // slow or not-virgin release
-                if (keycode == SWKC_TMP) {
-                    if (g_temp_tty && g_tty_active && g_perm_tty != g_temp_tty) {
-                        g_prev_tty = g_perm_tty;
-                        g_perm_tty = g_temp_tty;
-                    }
+                g_mod = 0;
+                if (g_temp_tty && g_tty_active && g_perm_tty != g_temp_tty) {
+                    g_prev_tty = g_perm_tty;
+                    g_perm_tty = g_temp_tty;
                     g_temp_tty = 0;
                 }
-                g_mod = 0;
+                g_temp_tty = 0;
+                tty_tgt = g_perm_tty;
+                goto send_tty;
             }
             return false;
         case SWKC_RLT:
             if (!record->event.pressed) return false;
-            pkt.id = SWTCHR_TTY;
             if (--*ptr == 0) *ptr = 8;
-            pkt.payload = *ptr;
+            tty_tgt = *ptr;
             if (ptr == &g_perm_tty)
-                goto send;
+                goto send_tty;
             return false;
         case SWKC_RRT:
             if (!record->event.pressed) return false;
-            pkt.id = SWTCHR_TTY;
             if (++*ptr == 9) *ptr = 1;
-            pkt.payload = *ptr;
+            tty_tgt = *ptr;
             if (ptr == &g_perm_tty)
-                goto send;
+                goto send_tty;
             return false;
         case SWKC_LCK:
             if (record->event.pressed) {
@@ -258,33 +302,30 @@ mod:
     switch (g_mod) {
         case SWKC_VIM:
             if (!record->event.pressed) return false;
-            pkt.id = SWTCHR_VIM;
             switch (keycode) {
-                case SWKC_2: pkt.payload = SWTCHR_UP; goto send;
-                case SWKC_5: pkt.payload = SWTCHR_LEFT; goto send;
-                case SWKC_6: pkt.payload = SWTCHR_DOWN; goto send;
-                case SWKC_7: pkt.payload = SWTCHR_RIGHT; goto send;
+                case SWKC_2: SEND_STRING(SS_LCTL("w") "k"); break;
+                case SWKC_5: SEND_STRING(SS_LCTL("w") "h"); break;
+                case SWKC_6: SEND_STRING(SS_LCTL("w") "j"); break;
+                case SWKC_7: SEND_STRING(SS_LCTL("w") "l"); break;
             }
             return false;
         case SWKC_BRW:
             if (!record->event.pressed) return false;
-            pkt.id = SWTCHR_BROWSER;
             switch (keycode) {
                 case SWKC_1:
-                case SWKC_5: pkt.payload = SWTCHR_LEFT; goto send;
+                case SWKC_5: SEND_STRING(SS_LCTL(SS_LSFT("\t"))); goto send_tty;
                 case SWKC_3:
-                case SWKC_7: pkt.payload = SWTCHR_RIGHT; goto send;
+                case SWKC_7: SEND_STRING(SS_LCTL("\t")); goto send_tty;
             }
             return false;
         case SWKC_TMP:
-            pkt.id = SWTCHR_TTY;
             g_tty_active = record->event.pressed;
             switch (keycode) {
 #define SWK(v) \
                 case SWKC_ ## v: \
-                    if (record->event.pressed) pkt.payload = g_temp_tty = v; \
+                    if (record->event.pressed) tty_tgt = g_temp_tty = v; \
                     else return false; \
-                    goto send;
+                    goto send_tty;
                 SWK(1) SWK(2) SWK(3) SWK(4) SWK(5) SWK(6) SWK(7) SWK(8)
 #undef SWK
             }
@@ -305,28 +346,27 @@ mod:
             return false;
         case 0:
             if (!record->event.pressed) return false;
-            pkt.id = SWTCHR_TTY;
             switch (keycode) {
-                case SWKC_1: pkt.payload = 1; break;
-                case SWKC_2: pkt.payload = 2; break;
-                case SWKC_3: pkt.payload = 3; break;
-                case SWKC_4: pkt.payload = 4; break;
-                case SWKC_5: pkt.payload = 5; break;
-                case SWKC_6: pkt.payload = 6; break;
-                case SWKC_7: pkt.payload = 7; break;
-                case SWKC_8: pkt.payload = 8; break;
+                case SWKC_1: tty_tgt = 1; break;
+                case SWKC_2: tty_tgt = 2; break;
+                case SWKC_3: tty_tgt = 3; break;
+                case SWKC_4: tty_tgt = 4; break;
+                case SWKC_5: tty_tgt = 5; break;
+                case SWKC_6: tty_tgt = 6; break;
+                case SWKC_7: tty_tgt = 7; break;
+                case SWKC_8: tty_tgt = 8; break;
                 default: return false;
             }
-            if (g_perm_tty != pkt.payload) {
+            if (g_perm_tty != tty_tgt) {
                 g_prev_tty = g_perm_tty;
-                g_perm_tty = pkt.payload;
+                g_perm_tty = tty_tgt;
             }
-            goto send;
+            goto send_tty;
         default:
             return false;
     }
 
-send:
-    raw_hid_send((uint8_t*)&pkt, sizeof(pkt));
+send_tty:
+    set_tty(tty_tgt);
     return false;
 }
